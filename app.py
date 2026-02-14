@@ -6,59 +6,43 @@ import tempfile
 import pandas as pd
 
 # إعداد الصفحة
-st.set_page_config(layout="wide", page_title="High Jump Smart Coach")
+st.set_page_config(layout="wide", page_title="High Jump Pro Report")
 
-st.title("🏆 المدرب الذكي للوثب العالي")
+# العنوان
 st.markdown("""
-**هذا النظام لا يعرض أرقاماً عشوائية، بل يقوم بـ:**
-1. اكتشاف **أعلى نقطة** وصل لها اللاعب تلقائياً.
-2. تحليل **لحظة الارتقاء** الحاسمة.
-3. إعطاء **تقرير فني** واضح ومفهوم.
-""")
+<style>
+.big-font { font-size:30px !important; font-weight: bold; color: #1f77b4; }
+.feedback-box { padding: 15px; border-radius: 10px; background-color: #f0f2f6; border-left: 5px solid #1f77b4; }
+</style>
+""", unsafe_allow_html=True)
 
-# --- القائمة الجانبية ---
-st.sidebar.header("إعدادات اللاعب")
+st.markdown('<p class="big-font">📋 تقرير الأداء الفني للوثب العالي</p>', unsafe_allow_html=True)
+st.write("نظام تحليل الاداء للمدربين واللاعبين: أرقام دقيقة + مقارنة معيارية + توجيهات.")
+
+# --- الشريط الجانبي ---
+st.sidebar.header("1️⃣ بيانات اللاعب")
 athlete_height = st.sidebar.number_input("طول اللاعب (متر):", value=1.80, step=0.01)
-view_side = st.sidebar.selectbox("جهة الكاميرا:", ["اليسار (Left)", "اليمين (Right)"])
+view_side = st.sidebar.selectbox("جهة التصوير:", ["اليسار (Left)", "اليمين (Right)"])
+st.sidebar.warning("⚠️ تأكد أن التصوير جانبي وثابت للحصول على تقرير دقيق.")
 
-# إعداد MediaPipe
-mp_pose = mp.solutions.pose
-mp_drawing = mp.solutions.drawing_utils
-
-# --- دوال التحليل ---
+# --- دوال الحساب ---
 def calculate_angle(a, b, c):
-    a = np.array(a)
-    b = np.array(b)
-    c = np.array(c)
+    a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians*180.0/np.pi)
     if angle > 180.0: angle = 360-angle
     return angle
 
-def analyze_performance(knee_angle, jump_height):
-    feedback = []
-    score = 0
-    
-    # تحليل زاوية الركبة
-    if 135 <= knee_angle <= 170:
-        feedback.append("✅ **زاوية الركبة (Take-off):** ممتازة! تسمح بأقصى دفع عمودي.")
-        score += 1
-    elif knee_angle < 135:
-        feedback.append("⚠️ **زاوية الركبة:** منخفضة جداً (Deep Crouch). هذا يضيع الطاقة، حاول عدم النزول كثيراً.")
+def get_feedback(metric_name, value, target_min, target_max):
+    if target_min <= value <= target_max:
+        return "✅ ممتاز (ضمن النطاق المثالي)"
+    elif value < target_min:
+        return "⚠️ منخفض (تحتاج لزيادة الرقم)"
     else:
-        feedback.append("⚠️ **زاوية الركبة:** مستقيمة جداً، لم تستفد من مرونة المفصل للدفع.")
+        return "⚠️ مرتفع (تحتاج لتقليل الرقم)"
 
-    # تحليل الارتفاع (تقديري)
-    if jump_height > 0.4: # 40 سم فوق الارض كمركز كتلة
-        feedback.append("🚀 **الارتفاع:** جيد جداً، القوس (Arch) يبدو عالياً.")
-        score += 1
-    else:
-        feedback.append("📉 **الارتفاع:** منخفض قليلاً، ركز على تحويل السرعة الأفقية إلى عمودية.")
-        
-    return feedback, score
-
-# --- التطبيق الرئيسي ---
-uploaded_file = st.file_uploader("ارفع فيديو المحاولة وسأقوم بتحليله...", type=["mp4", "mov", "avi"])
+# --- المحرك الرئيسي ---
+uploaded_file = st.file_uploader("2️⃣ ارفع فيديو المحاولة هنا", type=["mp4", "mov", "avi"])
 
 if uploaded_file is not None:
     tfile = tempfile.NamedTemporaryFile(delete=False) 
@@ -66,115 +50,131 @@ if uploaded_file is not None:
     
     cap = cv2.VideoCapture(tfile.name)
     
-    # مكان عرض الفيديو والنتائج
-    video_placeholder = st.empty()
-    status_text = st.empty()
+    # واجهة العرض أثناء التحليل
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        st_video = st.empty()
+    with col2:
+        st.info("جاري تحليل المحاولة... يرجى الانتظار")
+        st_progress = st.progress(0)
     
-    # متغيرات لتخزين "أفضل اللقطات"
-    frames_data = [] # لتخزين (الصورة، الارتفاع، الزاوية)
+    # متغيرات لتخزين "أقصى" و "أدنى" قيم خلال المحاولة
+    min_knee_angle = 180 # نبحث عن أقل زاوية (لحظة التحميل)
+    max_hip_height = 0   # نبحث عن أعلى ارتفاع
+    max_velocity = 0     # أقصى سرعة عمودية
     
+    mp_pose = mp.solutions.pose
+    mp_drawing = mp.solutions.drawing_utils
+    
+    # لحساب السرعة
+    prev_hip_y = None
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps == 0: fps = 30
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    current_frame = 0
+
     with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
-        frame_count = 0
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
             
-            frame_count += 1
-            # تخفيف الحمل (معالجة إطار وترك إطارين) لتسريع التحليل
-            if frame_count % 2 != 0:
-                continue
+            current_frame += 1
+            if total_frames > 0: st_progress.progress(current_frame / total_frames)
 
-            # تحجيم الصورة
-            frame = cv2.resize(frame, (0, 0), fx=0.6, fy=0.6)
-            h, w, c = frame.shape
-            
-            image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = pose.process(image_rgb)
+            # معالجة الصورة
+            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(image)
             
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
-                
-                # تحديد النقاط
                 side = "LEFT" if view_side == "اليسار (Left)" else "RIGHT"
+                
+                # النقاط
                 hip = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_HIP").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_HIP").value].y]
                 knee = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_KNEE").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_KNEE").value].y]
                 ankle = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_ANKLE").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_ANKLE").value].y]
                 shoulder = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_SHOULDER").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_SHOULDER").value].y]
 
-                # الحسابات
-                knee_angle = calculate_angle(hip, knee, ankle)
+                # 1. الحسابات اللحظية
+                # زاوية الركبة
+                angle = calculate_angle(hip, knee, ankle)
+                if angle < min_knee_angle: min_knee_angle = angle # تسجيل أعمق نقطة نزول
                 
-                # ارتفاع مركز الكتلة (Hip Height) - معكوس لأن Y يبدأ من الأعلى
-                hip_height_pixel = 1 - hip[1] 
+                # الارتفاع والسرعة (بالمتر التقديري)
+                # عامل التحويل: طول الجذع (كتف-ورك) يمثل تقريباً 30% من طول اللاعب
+                torso_len_pixel = np.linalg.norm(np.array(shoulder) - np.array(hip))
+                if torso_len_pixel > 0:
+                    pixel_to_meter = (athlete_height * 0.3) / torso_len_pixel
+                    
+                    # ارتفاع الورك عن "أسفل الصورة" (تقديري للأرض)
+                    current_height_m = (1 - hip[1]) * pixel_to_meter * 3.3 # تقريب
+                    if current_height_m > max_hip_height: max_hip_height = current_height_m
+                    
+                    # السرعة العمودية
+                    if prev_hip_y is not None:
+                        dist_pixel = prev_hip_y - hip[1] # المسافة المقطوعة
+                        dist_m = dist_pixel * pixel_to_meter * 3.3
+                        vel = dist_m * fps # السرعة م/ث
+                        if vel > max_velocity and vel < 10: # تجاهل الأخطاء (أقل من 10م/ث)
+                            max_velocity = vel
+                    
+                    prev_hip_y = hip[1]
                 
-                # رسم الهيكل
+                # رسم
                 mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-                
-                # تخزين البيانات للتحليل اللاحق
-                frames_data.append({
-                    "frame": frame,
-                    "hip_height": hip_height_pixel,
-                    "knee_angle": knee_angle,
-                    "frame_id": frame_count
-                })
-                
-            # عرض الفيديو أثناء المعالجة (سريع)
-            status_text.text(f"جاري تحليل الإطار رقم: {frame_count}...")
-            video_placeholder.image(frame, channels="BGR", use_column_width=True)
+            
+            st_video.image(frame, channels="BGR", use_column_width=True)
 
     cap.release()
-    status_text.empty()
-    video_placeholder.empty() # إخفاء الفيديو الأصلي لعرض النتائج
+    st_progress.empty() # إخفاء شريط التحميل
 
-    # --- مرحلة "الذكاء" - تحليل البيانات المخزنة ---
-    if frames_data:
-        df = pd.DataFrame(frames_data)
-        
-        # 1. العثور على "قمة القفزة" (Max Height)
-        max_height_idx = df['hip_height'].idxmax()
-        peak_frame_data = df.iloc[max_height_idx]
-        
-        # 2. العثور على "لحظة الارتقاء" (Take-off)
-        # هي اللحظة التي تسبق القمة ويكون فيها الركبة مثنية ثم تبدأ بالانفراد
-        # سنبسطها بأخذ أقل ارتفاع قبل القمة
-        takeoff_idx = df.iloc[:max_height_idx]['hip_height'].idxmin()
-        takeoff_data = df.iloc[takeoff_idx]
-        
-        # --- عرض النتائج بوضوح ---
-        st.success("✅ تم الانتهاء من التحليل! إليك أبرز اللقطات:")
-        
-        col1, col2 = st.columns(2)
-        
-        # عرض صورة الارتقاء
-        with col1:
-            st.subheader("1️⃣ لحظة الارتقاء (Take-off)")
-            # رسم دائرة على الركبة وكتابة الزاوية
-            img_takeoff = takeoff_data['frame'].copy()
-            st.image(img_takeoff, channels="BGR", caption=f"زاوية الركبة: {int(takeoff_data['knee_angle'])} درجة", use_column_width=True)
-            
-        # عرض صورة القمة
-        with col2:
-            st.subheader("2️⃣ قمة القفزة (Peak Height)")
-            img_peak = peak_frame_data['frame'].copy()
-            st.image(img_peak, channels="BGR", caption="أقصى ارتفاع وصل له الورك", use_column_width=True)
+    # --- 3️⃣ عرض التقرير النهائي (هنا الزبدة) ---
+    st.markdown("---")
+    st.subheader("📊 نتائج التحليل وتوصيات المدرب")
 
-        # --- تقرير المدرب (النص المفهوم) ---
-        st.markdown("---")
-        st.header("📝 تقرير المدرب الآلي")
-        
-        feedback_list, score = analyze_performance(takeoff_data['knee_angle'], peak_frame_data['hip_height'])
-        
-        for item in feedback_list:
-            st.markdown(item)
-            
-        if score == 2:
-            st.balloons()
-            st.success("🎉 أداء ممتاز! المحاولة مثالية من الناحية الميكانيكية.")
-        elif score == 1:
-            st.warning("⚠️ أداء جيد، لكن هناك مجال للتحسين في النقاط المذكورة أعلاه.")
-        else:
-            st.error("🛑 تحتاج إلى مراجعة شاملة لتقنية القفز، انتبه للملاحظات.")
+    # تقسيم التقرير إلى 3 أعمدة
+    col1, col2, col3 = st.columns(3)
 
-    else:
-        st.error("لم يتم اكتشاف جسم اللاعب بوضوح. تأكد من الإضاءة وظهور اللاعب بالكامل.")
+    # المؤشر 1: زاوية التحميل (الركبة)
+    with col1:
+        st.markdown("### 🦵 زاوية الركبة")
+        val = int(min_knee_angle)
+        status = get_feedback("Knee", val, 135, 145)
+        color = "green" if "ممتاز" in status else "red"
+        
+        st.metric(label="أقل زاوية تم تسجيلها", value=f"{val}°", delta=status, delta_color="inverse" if "مرتفع" in status else "normal")
+        st.markdown(f"""
+        **المعيار المثالي:** 135° - 145°
+        
+        **التغذية الراجعة:**
+        {'انثناء الركبة ممتاز ويسمح بتخزين طاقة قوية.' if val >= 135 and val <= 145 else 'الركبة انثنت بشكل زائد (جلوس)، هذا يقتل السرعة.' if val < 135 else 'النزول غير كافي، لم تستفد من قوة الفخذين.'}
+        """)
+
+    # المؤشر 2: السرعة العمودية
+    with col2:
+        st.markdown("### 🚀 قوة الانفجار")
+        val = round(max_velocity, 2)
+        status = "جيد" if val > 3.0 else "يحتاج تحسين"
+        
+        st.metric(label="أقصى سرعة عمودية", value=f"{val} m/s")
+        st.markdown(f"""
+        **المعيار:** > 3.5 m/s (للمحترفين)
+        
+        **التغذية الراجعة:**
+        سرعة الانطلاق هي مفتاح الارتفاع.
+        {'دفعك للأرض قوي جداً!' if val > 4.0 else 'دفعك جيد، لكن حاول تسريع الخطوة الأخيرة.' if val > 3.0 else 'الدفع بطيء، تحتاج لتمارين قوة انفجارية (Plyometrics).'}
+        """)
+
+    # المؤشر 3: ارتفاع الطيران
+    with col3:
+        st.markdown("### 📈 ارتفاع الورك")
+        val = round(max_hip_height, 2)
+        
+        st.metric(label="أقصى ارتفاع للورك", value=f"{val} m")
+        st.markdown(f"""
+        **المقارنة بطولك:** {round(val - (athlete_height/2), 2)}+ متر
+        
+        **التغذية الراجعة:**
+        هذا الرقم يعكس كفاءة القوس (Arch) فوق العارضة. تأكد من رفع الورك لأعلى نقطة ممكنة لحظة العبور.
