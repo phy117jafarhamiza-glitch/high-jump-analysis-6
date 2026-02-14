@@ -4,30 +4,28 @@ import mediapipe as mp
 import numpy as np
 import tempfile
 import pandas as pd
-import time
 
 # إعداد الصفحة
-st.set_page_config(layout="wide", page_title="High Jump Biomechanics Lab")
+st.set_page_config(layout="wide", page_title="High Jump Smart Coach")
 
-st.title("🔬 مختبر التحليل الميكانيكي الحيوي الشامل")
+st.title("🏆 المدرب الذكي للوثب العالي")
 st.markdown("""
-هذا التطبيق يقوم بحساب:
-1. **الزوايا:** (الركبة، الورك، قوس الظهر).
-2. **الكينماتيكا:** (السرعة العمودية، السرعة الأفقية، ارتفاع الطيران).
-3. **مركز الكتلة (CoM):** رسم مسار الحركة.
+**هذا النظام لا يعرض أرقاماً عشوائية، بل يقوم بـ:**
+1. اكتشاف **أعلى نقطة** وصل لها اللاعب تلقائياً.
+2. تحليل **لحظة الارتقاء** الحاسمة.
+3. إعطاء **تقرير فني** واضح ومفهوم.
 """)
 
-# --- القائمة الجانبية للإعدادات ---
-st.sidebar.header("⚙️ إعدادات المعايرة")
-athlete_height = st.sidebar.number_input("طول اللاعب (بالمتر) - للمعايرة:", min_value=1.0, max_value=2.5, value=1.80, step=0.01)
-fps_input = st.sidebar.number_input("معدل إطارات الفيديو (FPS) - تقريبي:", min_value=15, max_value=240, value=30)
-view_side = st.sidebar.selectbox("جهة التصوير:", ["اليسار (Left)", "اليمين (Right)"])
+# --- القائمة الجانبية ---
+st.sidebar.header("إعدادات اللاعب")
+athlete_height = st.sidebar.number_input("طول اللاعب (متر):", value=1.80, step=0.01)
+view_side = st.sidebar.selectbox("جهة الكاميرا:", ["اليسار (Left)", "اليمين (Right)"])
 
 # إعداد MediaPipe
-mp_drawing = mp.solutions.drawing_utils
 mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
 
-# دوال مساعدة
+# --- دوال التحليل ---
 def calculate_angle(a, b, c):
     a = np.array(a)
     b = np.array(b)
@@ -37,16 +35,30 @@ def calculate_angle(a, b, c):
     if angle > 180.0: angle = 360-angle
     return angle
 
-def get_center_of_mass(landmarks):
-    # تقريب مركز الكتلة باستخدام منتصف الوركين (نقطة مبسطة للوثب العالي)
-    left_hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x, landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y]
-    right_hip = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x, landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y]
-    center_x = (left_hip[0] + right_hip[0]) / 2
-    center_y = (left_hip[1] + right_hip[1]) / 2
-    return [center_x, center_y]
+def analyze_performance(knee_angle, jump_height):
+    feedback = []
+    score = 0
+    
+    # تحليل زاوية الركبة
+    if 135 <= knee_angle <= 170:
+        feedback.append("✅ **زاوية الركبة (Take-off):** ممتازة! تسمح بأقصى دفع عمودي.")
+        score += 1
+    elif knee_angle < 135:
+        feedback.append("⚠️ **زاوية الركبة:** منخفضة جداً (Deep Crouch). هذا يضيع الطاقة، حاول عدم النزول كثيراً.")
+    else:
+        feedback.append("⚠️ **زاوية الركبة:** مستقيمة جداً، لم تستفد من مرونة المفصل للدفع.")
+
+    # تحليل الارتفاع (تقديري)
+    if jump_height > 0.4: # 40 سم فوق الارض كمركز كتلة
+        feedback.append("🚀 **الارتفاع:** جيد جداً، القوس (Arch) يبدو عالياً.")
+        score += 1
+    else:
+        feedback.append("📉 **الارتفاع:** منخفض قليلاً، ركز على تحويل السرعة الأفقية إلى عمودية.")
+        
+    return feedback, score
 
 # --- التطبيق الرئيسي ---
-uploaded_file = st.file_uploader("ارفع فيديو المحاولة (يفضل تصوير جانبي ثابت)", type=["mp4", "mov", "avi"])
+uploaded_file = st.file_uploader("ارفع فيديو المحاولة وسأقوم بتحليله...", type=["mp4", "mov", "avi"])
 
 if uploaded_file is not None:
     tfile = tempfile.NamedTemporaryFile(delete=False) 
@@ -54,157 +66,115 @@ if uploaded_file is not None:
     
     cap = cv2.VideoCapture(tfile.name)
     
-    # واجهة العرض
-    col1, col2 = st.columns([3, 2])
-    with col1:
-        stframe = st.empty()
-    with col2:
-        st.subheader("📊 القياسات الحية")
-        metric_knee = st.empty()
-        metric_arch = st.empty()
-        metric_vel_y = st.empty()
-        metric_height = st.empty()
-        
-    # متغيرات لتخزين البيانات للرسم البياني
-    data_log = []
-    prev_com_y = None
-    prev_time = 0
-    trajectory_points = []
+    # مكان عرض الفيديو والنتائج
+    video_placeholder = st.empty()
+    status_text = st.empty()
     
-    # المعايرة (تقديرية: نفترض أن طول الجسم في الفيديو يغطي نسبة معينة)
-    # ملاحظة: المعايرة الدقيقة تتطلب معرفة طول جسم اللاعب بالبكسل في كل إطار
-    # سنستخدم "Scale" بسيط يعتمد على المسافة بين الكتف والكاحل لتقريب المتر
-    pixel_to_meter_scale = 0.0 # سيتم حسابه داخل الحلقة
-
+    # متغيرات لتخزين "أفضل اللقطات"
+    frames_data = [] # لتخزين (الصورة، الارتفاع، الزاوية)
+    
     with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
+        frame_count = 0
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
             
-            # تحجيم الصورة للحفاظ على الأداء
-            frame = cv2.resize(frame, (0, 0), fx=0.8, fy=0.8)
+            frame_count += 1
+            # تخفيف الحمل (معالجة إطار وترك إطارين) لتسريع التحليل
+            if frame_count % 2 != 0:
+                continue
+
+            # تحجيم الصورة
+            frame = cv2.resize(frame, (0, 0), fx=0.6, fy=0.6)
             h, w, c = frame.shape
             
-            # معالجة Mediapipe
             image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = pose.process(image_rgb)
             
             if results.pose_landmarks:
                 landmarks = results.pose_landmarks.landmark
                 
-                # 1. استخراج النقاط
-                try:
-                    # تحديد النقاط بناءً على الجهة
-                    side_prefix = "LEFT" if view_side == "اليسار (Left)" else "RIGHT"
-                    
-                    # دالة مساعدة لجلب الإحداثيات
-                    def get_lm(name):
-                        lm = landmarks[getattr(mp_pose.PoseLandmark, f"{side_prefix}_{name}").value]
-                        return [lm.x, lm.y]
-                    
-                    shoulder = get_lm("SHOULDER")
-                    hip = get_lm("HIP")
-                    knee = get_lm("KNEE")
-                    ankle = get_lm("ANKLE")
-                    
-                    # 2. حساب عامل المعايرة (Scale Factor)
-                    # نحسب طول اللاعب الظاهري بالبكسل (من الكتف للكاحل) لتقريب التحويل
-                    pixel_height = np.linalg.norm(np.array(shoulder) - np.array(ankle)) # مسافة نسبية (0-1)
-                    if pixel_height > 0.1: # لتجنب الأخطاء إذا كان الجسم بعيداً
-                         # نفترض أن المسافة من الكتف للكاحل تمثل حوالي 80% من طول اللاعب الكلي
-                        estimated_body_pixels = pixel_height / 0.8
-                        pixel_to_meter_scale = athlete_height / estimated_body_pixels # متر لكل وحدة نسبية
+                # تحديد النقاط
+                side = "LEFT" if view_side == "اليسار (Left)" else "RIGHT"
+                hip = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_HIP").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_HIP").value].y]
+                knee = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_KNEE").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_KNEE").value].y]
+                ankle = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_ANKLE").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_ANKLE").value].y]
+                shoulder = [landmarks[getattr(mp_pose.PoseLandmark, f"{side}_SHOULDER").value].x, landmarks[getattr(mp_pose.PoseLandmark, f"{side}_SHOULDER").value].y]
 
-                    # 3. حساب الزوايا
-                    knee_angle = calculate_angle(hip, knee, ankle)
-                    hip_angle = calculate_angle(shoulder, hip, knee) # زاوية القوس
-                    
-                    # 4. حساب مركز الكتلة (CoM) والسرعة
-                    com = get_center_of_mass(landmarks) # [x, y] نسبي
-                    
-                    # تحويل CoM إلى بكسل للرسم
-                    cx, cy = int(com[0] * w), int(com[1] * h)
-                    trajectory_points.append((cx, cy))
-                    
-                    # حساب السرعة العمودية (Vertical Velocity)
-                    current_time = time.time()
-                    velocity_y = 0.0
-                    jump_height = 0.0
-                    
-                    if prev_com_y is not None and pixel_to_meter_scale > 0:
-                        # الفرق في المسافة (y inverted because 0 is top)
-                        delta_y = (prev_com_y - com[1]) * pixel_to_meter_scale # بالمتر
-                        delta_t = 1.0 / fps_input # الزمن بالثواني بناء على الـ FPS
-                        
-                        velocity_y = delta_y / delta_t # م/ث
-                        
-                        # حساب ارتفاع القفزة التقريبي (من الأرض)
-                        # نفترض أن الكاحل هو الأرض تقريباً
-                        jump_height = (ankle[1] - com[1]) * pixel_to_meter_scale
-                    
-                    prev_com_y = com[1]
-
-                    # --- الرسم على الفيديو ---
-                    # رسم المسار (Trajectory)
-                    for i in range(1, len(trajectory_points)):
-                        cv2.line(frame, trajectory_points[i-1], trajectory_points[i], (0, 255, 255), 2)
-                    
-                    # رسم نقطة مركز الكتلة
-                    cv2.circle(frame, (cx, cy), 8, (0, 0, 255), -1)
-                    
-                    # رسم الزوايا
-                    knee_pos = tuple(np.multiply(knee, [w, h]).astype(int))
-                    cv2.putText(frame, f"{int(knee_angle)} deg", knee_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-                    # تحديث البيانات الحية
-                    metric_knee.metric("زاوية الركبة", f"{int(knee_angle)}°")
-                    metric_arch.metric("زاوية القوس (Hip)", f"{int(hip_angle)}°")
-                    metric_vel_y.metric("السرعة العمودية", f"{velocity_y:.2f} m/s")
-                    metric_height.metric("ارتفاع مركز الكتلة", f"{jump_height:.2f} m")
-                    
-                    # تخزين البيانات للتحليل النهائي
-                    data_log.append({
-                        "Frame": len(data_log),
-                        "Knee Angle": knee_angle,
-                        "Hip Angle": hip_angle,
-                        "Vertical Velocity (m/s)": velocity_y,
-                        "CoM Height (m)": jump_height
-                    })
-                    
-                except Exception as e:
-                    pass
-
-            # عرض الفيديو
-            stframe.image(frame, channels="BGR", use_column_width=True)
+                # الحسابات
+                knee_angle = calculate_angle(hip, knee, ankle)
+                
+                # ارتفاع مركز الكتلة (Hip Height) - معكوس لأن Y يبدأ من الأعلى
+                hip_height_pixel = 1 - hip[1] 
+                
+                # رسم الهيكل
+                mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+                
+                # تخزين البيانات للتحليل اللاحق
+                frames_data.append({
+                    "frame": frame,
+                    "hip_height": hip_height_pixel,
+                    "knee_angle": knee_angle,
+                    "frame_id": frame_count
+                })
+                
+            # عرض الفيديو أثناء المعالجة (سريع)
+            status_text.text(f"جاري تحليل الإطار رقم: {frame_count}...")
+            video_placeholder.image(frame, channels="BGR", use_column_width=True)
 
     cap.release()
+    status_text.empty()
+    video_placeholder.empty() # إخفاء الفيديو الأصلي لعرض النتائج
 
-    # --- عرض الرسوم البيانية بعد انتهاء الفيديو ---
-    st.markdown("---")
-    st.subheader("📈 تحليل الأداء البياني (Performance Analytics)")
-    
-    if data_log:
-        df = pd.DataFrame(data_log)
+    # --- مرحلة "الذكاء" - تحليل البيانات المخزنة ---
+    if frames_data:
+        df = pd.DataFrame(frames_data)
         
-        # رسم 1: السرعة والارتفاع
-        st.write("### تغير السرعة العمودية والارتفاع")
-        st.line_chart(df[["Vertical Velocity (m/s)", "CoM Height (m)"]])
+        # 1. العثور على "قمة القفزة" (Max Height)
+        max_height_idx = df['hip_height'].idxmax()
+        peak_frame_data = df.iloc[max_height_idx]
         
-        # رسم 2: الزوايا
-        st.write("### تغير زوايا المفاصل (Kinematics)")
-        st.line_chart(df[["Knee Angle", "Hip Angle"]])
+        # 2. العثور على "لحظة الارتقاء" (Take-off)
+        # هي اللحظة التي تسبق القمة ويكون فيها الركبة مثنية ثم تبدأ بالانفراد
+        # سنبسطها بأخذ أقل ارتفاع قبل القمة
+        takeoff_idx = df.iloc[:max_height_idx]['hip_height'].idxmin()
+        takeoff_data = df.iloc[takeoff_idx]
         
-        # جدول البيانات الخام (للمدربين)
-        with st.expander("عرض البيانات الخام (Excel)"):
-            st.dataframe(df)
+        # --- عرض النتائج بوضوح ---
+        st.success("✅ تم الانتهاء من التحليل! إليك أبرز اللقطات:")
+        
+        col1, col2 = st.columns(2)
+        
+        # عرض صورة الارتقاء
+        with col1:
+            st.subheader("1️⃣ لحظة الارتقاء (Take-off)")
+            # رسم دائرة على الركبة وكتابة الزاوية
+            img_takeoff = takeoff_data['frame'].copy()
+            st.image(img_takeoff, channels="BGR", caption=f"زاوية الركبة: {int(takeoff_data['knee_angle'])} درجة", use_column_width=True)
             
-            # زر التحميل (CSV)
-            csv = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="تحميل تقرير التحليل (CSV)",
-                data=csv,
-                file_name='jump_analysis.csv',
-                mime='text/csv',
-            )
+        # عرض صورة القمة
+        with col2:
+            st.subheader("2️⃣ قمة القفزة (Peak Height)")
+            img_peak = peak_frame_data['frame'].copy()
+            st.image(img_peak, channels="BGR", caption="أقصى ارتفاع وصل له الورك", use_column_width=True)
+
+        # --- تقرير المدرب (النص المفهوم) ---
+        st.markdown("---")
+        st.header("📝 تقرير المدرب الآلي")
+        
+        feedback_list, score = analyze_performance(takeoff_data['knee_angle'], peak_frame_data['hip_height'])
+        
+        for item in feedback_list:
+            st.markdown(item)
+            
+        if score == 2:
+            st.balloons()
+            st.success("🎉 أداء ممتاز! المحاولة مثالية من الناحية الميكانيكية.")
+        elif score == 1:
+            st.warning("⚠️ أداء جيد، لكن هناك مجال للتحسين في النقاط المذكورة أعلاه.")
+        else:
+            st.error("🛑 تحتاج إلى مراجعة شاملة لتقنية القفز، انتبه للملاحظات.")
+
+    else:
+        st.error("لم يتم اكتشاف جسم اللاعب بوضوح. تأكد من الإضاءة وظهور اللاعب بالكامل.")
